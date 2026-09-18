@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+.theme-light {
+  color-scheme: light;
+}
+
+.theme-light [class*="bg-[#"],
+.theme-light [class*="bg-zinc-"],
+.theme-light [class*="bg-black"] {
+  background-color: #ffffff !important;
+}
+
+.theme-light [class*="bg-zinc-950"],
+.theme-light [class*="bg-zinc-900"],
+.theme-light [class*="bg-zinc-850"] {
+  background-color: #f1f5f9 !important;
+}
+
+.theme-light [class*="bg-black/"] {
+  background-color: rgb(226 232 240 / 0.75) !important;
+}
+
+.theme-light [class*="text-zinc-100"],
+.theme-light [class*="text-zinc-200"],
+.theme-light [class*="text-zinc-300"] {
+  color: #1e293b !important;
+}
+
+.theme-light [class*="text-zinc-400"],
+.theme-light [class*="text-zinc-500"],
+.theme-light [class*="text-zinc-600"] {
+  color: #64748b !important;
+}
+
+.theme-light [class*="border-zinc-"] {
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light input,
+.theme-light textarea,
+.theme-light select {
+  background-color: #ffffff !important;
+  color: #1e293b !important;
+  border-color: #cbd5e1 !important;
+}
+
+.theme-light [class*="hover\\:bg-zinc-"]:hover {
+  background-color: #e2e8f0 !important;
+}
+
+.theme-light [class*="hover\\:text-white"]:hover {
+  color: #0f172a !important;
+}
