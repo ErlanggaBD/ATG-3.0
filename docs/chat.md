@@ -219,3 +219,93 @@ ganda/dobel. `setTimeout` yang dibersihkan via efek menghindari tumpang tindih.
 **Catatan:** auto-reconnect tetap menghormati proteksi "opsi Nonaktif"; jika di-uncheck di
 PENGATURAN, tidak ada percobaan ulang. Tanpa perangkat/firmware aktif, setiap percobaan akan
 gagal (log di main process) dan dicoba lagi 5 detik kemudian — perilaku normal.
+---
+
+## 8. Sensor A0 (penanda meter) + Pengunci Kalibrasi + Sekuens Tunggu POS_DONE (28 Sep 2026)
+
+**Permintaan:** motor harus berhenti fisik di titik meter yang dicentang (5–17 m) via sensor
+baru **A0** (satu flag tiap meter pada rel), operator wajib klik **HOME** (kalibrasi) dulu,
+dan popup input nilai di sekuens pengujian muncul **setelah motor benar-benar berhenti**
+(tunggu `POS_DONE` nyata dari firmware), bukan dari simulasi animasi lokal.
+
+### Firmware `Basic_Test_UDP.ino` (Basic_Test.ino asli TIDAK diubah)
+- `#define sensePin A0` + `pinMode(sensePin, INPUT_PULLUP)` — pola baca persis A1.
+- `bool homed` — true setelah A1 mendeteksi home/zero (`x`/`@0`/`+`/`-`).
+- Gate kalibrasi: `@<mm>` (≠0) dan `%`/`#` sebelum homed → respon `NOT_HOMED` tanpa gerak.
+- `checkA0Flag()`: selama gerakan posisi (`moveTargetMm > 0`), tiap step dicek A0 HIGH.
+  Posisi disinkronkan ke meter flag terdekat (`posisi = flagMeter*1000`, koreksi drift
+  open-loop); jika meter flag == target → `sensorArrived`, loop berhenti (Rot + sisa byMM),
+  respon tetap `POS_DONE:<mm>`. A0 non-aktif saat homing & jog ukur.
+- Kompilasi bersih: **55% flash, 36% RAM** (arduino-cli, Uno + W5100).
+
+### App (`src/App.tsx`, `BottomToolbar.tsx`, `DesktopWindowFrame.tsx`)
+- HOME button → perintah **`x`** (kalibrasi cari limit → posisi 0), label **HOME (0m)**;
+  ZERO (5m) tetap `@5000`.
+- State `isHomed` (true dari `HOME_DONE`/`ZERO_DONE`/`MAJU_DONE`/`MUNDUR_DONE`):
+  - tombol ZERO / PENGUJIAN NAIK & TURUN **disabled** (`movementBlocked = connected && !isHomed`),
+  - klik lintasan / pergerakan ditolak + modal **"MOTOR BELUM DIKALIBRASI"** (klik HOME dulu),
+  - badge peringatan amber "⚠ Belum Kalibrasi — Klik HOME (0m) dulu" di toolbar.
+- RX `NOT_HOMED` → isHomed false + modal peringatan kalibrasi.
+- Sekuens: `pendingSeqMoveRef` ditandai saat `handleMoveToMeter` dalam sekuens; popup/lanjut
+  hanya dipicu callback RX `POS_DONE:<mm>` (`onSequenceArrived`), bukan animasi lokal.
+  Effect lama berbasis `motorStatus.isMoving` dihapus.
+- E-STOP & disconnect mereset `pendingSeqMoveRef`.
+
+### Verifikasi
+- `npm run lint` ✅, `npx vitest run`: **24/24** lolos (tes baru: disabled-state, sekuens
+  tunggu `POS_DONE` asli, kalibrasi-HOME-duluan; bridge test kini meng-capture `onHardwareLog`
+  untuk mensimulasikan RX firmware).
+- `npm run build` (vite) ✅. Paket desktop dibangun ulang → `release/` **1.0.0**.
+- Field test berikutnya: flash firmware, HOME (`x`→`HOME_DONE`), PENGUJIAN NAIK → motor
+  berhenti di flag tiap meter dicentang → popup → lanjut.
+---
+
+## 9. KOREKSI: Kalibrasi Bertingkat HOME (17m) → ZERO (0m) + Arah Naik/Turun (28 Sep 2026)
+
+**Kekeliruan pada bagian 8:** HOME dikira berada di limit yang sama dengan posisi 0 m. 
+Fisik sebenarnya (dikonfirmasi operator):
+
+- **Sensor A1 tunggal dengan DUA plat pemicu** di kedua ujung rel:
+  - **HOME** = ujung **setelah titik 17 m** — ditemukan dengan perintah **`+`** (motor ke arah
+    17 m) sampai A1 terpicu (true).
+  - **ZERO** = ujung **sebelum titik 5 m** — ditemukan dengan perintah **`-`** (motor mundur)
+    sampai A1 terpicu. Ini titik acuan **posisi 0 mm**; pengujian dimulai dari titik 5 m.
+- **Alur wajib saat program baru dinyalakan:** hanya **HOME (`+`)** boleh → `HOME_DONE` →
+  lalu **ZERO (`-`)** boleh → `ZERO_DONE` → baru **PENGUJIAN** (menggunakan sensor A0 / flag
+  meter 5–17 m).
+
+### Firmware `Basic_Test_UDP.ino` (perubahan dari bagian 8)
+- `bool homed` diganti **`homeDone`** dan **`zeroDone`** (kalibrasi bertingkat).
+- `+` dan `x` → **HOME**: motor ke arah 17 m sampai A1 → `HOME_DONE`, `posisi = 17000`.
+- `-` dan `@0` → **ZERO**: motor mundur sampai A1 → `ZERO_DONE`, `posisi = 0`. Sebelum
+  `HOME_DONE` dibalas `NOT_HOMED`.
+- `Move*_Init` sekarang **`bool`**: `false` bila loop diputus E-STOP sebelum limit → flag
+  tidak diklaim selesai (`HOME_DONE`/`ZERO_DONE` tidak dikirim).
+- Gate bertingkat: sebelum HOME_DONE → `NOT_HOMED` (untuk `-`/`@0`/`@<mm>`/`%`); setelah HOME
+  tapi belum ZERO_DONE → `NOT_ZEROED` (untuk `@<mm>`/`%`).
+- **Arah posisi di-balik** mengikuti fisik: `value > posisi` (naik, menuju 17 m) memakai
+  fungsi arah HIGH (searah `+`/HOME); `value < posisi` (turun, menuju zero) memakai arah LOW
+  (searah `-`). Komisioning lapangan tetap memverifikasi arah; bila terbalik cukup tukar
+  HIGH/LOW di `Move*ByRot`/`Move*_Init`.
+- `@0` tidak lagi back-off + MoveKiri_Init; langsung `MoveMundur_Init()` (kalibrasi ZERO).
+
+### App (`App.tsx`, `BottomToolbar.tsx`, `DesktopWindowFrame.tsx`)
+- **HOME (17m)** → perintah **`+`**; **ZERO (0m)** → perintah **`-`** (kalibrasi limit,
+  bukan lagi `@5000`).
+- State `isHomed` (dari `HOME_DONE`) → mengaktifkan tombol **ZERO**; `isZeroed` (dari
+  `ZERO_DONE`) → mengaktifkan **PENGUJIAN NAIK/TURUN** + klik lintasan.
+- Badge tahap: "⚠ Belum Kalibrasi — Klik HOME (17m) dulu" → "⚠ Belum Kalibrasi ZERO — Klik
+  ZERO (0m) dulu" → "Controller Siap Menerima Perintah UDP".
+- RX: `HOME_DONE` → posisi tampil 17.000 m; `ZERO_DONE` → 0.000 m; `NOT_HOMED`/`NOT_ZEROED`
+  → modal peringatan tahap terkait. `MAJU_DONE`/`MUNDUR_DONE` tidak lagi dipakai app.
+- Sekuens PENGUJIAN tetap menunggu `POS_DONE:<mm>` fisik (tidak berubah dari bagian 8).
+
+### Verifikasi (bagian 9)
+- `arduino-cli compile`: ✅ **55% flash, 35% RAM**.
+- `npm run lint` ✅; `npx vitest run`: **26/26** lolos (tes alur 3 tahap: belum-HOME → setelah
+  HOME_DONE → setelah ZERO_DONE; label ZERO (0m)/HOME (17m); sekuens tetap tunggu POS_DONE).
+- `npm run build` (vite) ✅; paket desktop dibangun ulang → `release/` **1.0.0**.
+- Field test berikutnya: flash firmware → **HOME (17m)** (`+` → motor lari ke 17 m, stop di
+  A1 >17 m, `HOME_DONE`) → **ZERO (0m)** (`-` → motor mundur sampai <5 m, `ZERO_DONE`) →
+  PENGUJIAN NAIK stop di tiap flag dicentang (A0) → popup → lanjut; uji E-STOP `s`.
+  ⚠ Periksa arah motor: jika HOME malah lari ke arah zero, balik HIGH/LOW dirPin di firmware.

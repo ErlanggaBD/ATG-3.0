@@ -18,8 +18,8 @@ interface BottomToolbarProps {
   onOpenSettings: () => void;
   onOpenPreview: () => void;
   onCloseApp: () => void;
-  onZero5M: () => void;
-  onHome17M: () => void;
+  onZero: () => void;
+  onHome: () => void;
   onPengujianNaik: () => void;
   onPengujianTurun: () => void;
   lastCalibrationTimestamp: string;
@@ -28,14 +28,17 @@ interface BottomToolbarProps {
   isEditStd: boolean;
   onToggleEditStd: () => void;
   isRunningSequence: boolean;
+  isHomed: boolean;
+  isZeroed: boolean;
+  isConnected: boolean;
 }
 
 export const BottomToolbar: React.FC<BottomToolbarProps> = ({
   onOpenSettings,
   onOpenPreview,
   onCloseApp,
-  onZero5M,
-  onHome17M,
+  onZero,
+  onHome,
   onPengujianNaik,
   onPengujianTurun,
   lastCalibrationTimestamp,
@@ -43,8 +46,17 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
   onToggleEditAlg,
   isEditStd,
   onToggleEditStd,
-  isRunningSequence
+  isRunningSequence,
+  isHomed,
+  isZeroed,
+  isConnected
 }) => {
+  // Kalibrasi bertingkat: HOME (17m) dulu — ZERO (0m) bari diizinkan setelah
+  // HOME_DONE, dan PENGUJIAN naik/turun setelah ZERO_DONE. Saat belum
+  // terhubung tombol tetap aktif agar popup "BELUM TERHUBUNG" bisa muncul.
+  const homeBlocked = isConnected && !isHomed;   // butuh HOME dulu
+  const zeroBlocked = isConnected && !isZeroed;  // butuh ZERO dulu (setelah HOME)
+
   return (
     <footer id="toolbar-bawah" className="bg-[#12141c] border-t border-zinc-800 p-3 select-none text-zinc-200 shadow-2xl">
       {/* Top row in footer: Timestamp & Active Status indicator */}
@@ -63,10 +75,20 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
               <span className="w-2 h-2 rounded-full bg-amber-400"></span>
               Sekuens Motor Sedang Berjalan...
             </span>
+          ) : isConnected && !isHomed ? (
+            <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/40 text-[11px]">
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              ⚠ Belum Kalibrasi — Klik HOME (17m) dulu
+            </span>
+          ) : isConnected && !isZeroed ? (
+            <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/40 text-[11px]">
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              ⚠ Belum Kalibrasi ZERO — Klik ZERO (0m) dulu
+            </span>
           ) : (
             <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[11px]">
               <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-              Controller Siap Menerima Perintah TCP
+              Controller Siap Menerima Perintah UDP
             </span>
           )}
         </div>
@@ -81,7 +103,7 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
             id="btn-toolbar-pengaturan"
             onClick={onOpenSettings}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs font-semibold shadow-sm transition active:scale-95 cursor-pointer"
-            title="Konfigurasi parameter ekspor Excel & TCP/IP"
+            title="Konfigurasi parameter ekspor Excel & UDP/LAN"
           >
             <Settings className="w-4 h-4 text-blue-400" />
             <span>PENGATURAN</span>
@@ -130,25 +152,28 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
 
         </div>
 
-        {/* Center/Right Group: Motor Control Commands (ZERO 5m, HOME 17m, UJI NAIK, UJI TURUN, CLOSE) */}
+        {/* Center/Right Group: Motor Control Commands (ZERO 0m, HOME 17m, UJI NAIK, UJI TURUN, CLOSE) */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Tombol ZERO (ikon garis tengah) -> Pindah motor ke area 5 meter */}
+          {/* Tombol ZERO (ikon garis tengah) -> perintah '-': Kalibrasi ke limit
+              A1 di ujung sebelum 5 m (posisi 0, ZERO_DONE) */}
           <button
             id="btn-toolbar-zero"
-            onClick={onZero5M}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-600/90 hover:bg-amber-600 border border-amber-400 text-white text-xs font-bold shadow-md shadow-amber-950/40 transition active:scale-95 cursor-pointer"
-            title="Kirim perintah TCP/IP: Pindahkan motor ke Area 5.0 Meter (ZERO)"
+            onClick={onZero}
+            disabled={homeBlocked}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-600/90 hover:bg-amber-600 border border-amber-400 text-white text-xs font-bold shadow-md shadow-amber-950/40 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none disabled:saturate-50"
+            title="Kirim perintah UDP '-': Kalibrasi ZERO — motor mundur sampai limit A1 di ujung sebelum 5 m (posisi 0, ZERO_DONE). Syarat: HOME (17m) dulu"
           >
             <Minus className="w-4 h-4 stroke-[3]" />
-            <span>ZERO (5m)</span>
+            <span>ZERO (0m)</span>
           </button>
 
-          {/* Tombol HOME (ikon rumah) -> Pindah motor ke area 17 meter */}
+          {/* Tombol HOME (ikon rumah) -> perintah '+': kalibrasi HOME, motor ke
+              arah 17 m sampai limit A1 di ujung setelah 17 m (HOME_DONE) */}
           <button
             id="btn-toolbar-home"
-            onClick={onHome17M}
+            onClick={onHome}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-600/90 hover:bg-emerald-600 border border-emerald-400 text-white text-xs font-bold shadow-md shadow-emerald-950/40 transition active:scale-95 cursor-pointer"
-            title="Kirim perintah TCP/IP: Pindahkan motor ke Area 17.0 Meter (HOME)"
+            title="Kirim perintah UDP '+': Kalibrasi HOME — motor ke arah 17 m sampai limit A1 di ujung setelah 17 m (HOME_DONE). Wajib ditekan pertama kali setelah program dinyalakan, sebelum ZERO/PENGUJIAN"
           >
             <Home className="w-4 h-4" />
             <span>HOME (17m)</span>
@@ -160,8 +185,9 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
           <button
             id="btn-toolbar-uji-naik"
             onClick={onPengujianNaik}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-700 hover:bg-blue-600 border border-blue-500 text-white text-xs font-bold shadow-md transition active:scale-95 cursor-pointer"
-            title="Mulai sekuens pengujian naik sesuai titik tercentang"
+            disabled={zeroBlocked}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-700 hover:bg-blue-600 border border-blue-500 text-white text-xs font-bold shadow-md transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none disabled:saturate-50"
+            title="Mulai sekuens pengujian naik sesuai titik tercentang — wajib kalibrasi HOME (17m) dulu lalu ZERO (0m)"
           >
             <ArrowUp className="w-4 h-4 stroke-[2.5]" />
             <span>PENGUJIAN NAIK</span>
@@ -171,8 +197,9 @@ export const BottomToolbar: React.FC<BottomToolbarProps> = ({
           <button
             id="btn-toolbar-uji-turun"
             onClick={onPengujianTurun}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 border border-indigo-500 text-white text-xs font-bold shadow-md transition active:scale-95 cursor-pointer"
-            title="Mulai sekuens pengujian turun sesuai titik tercentang"
+            disabled={zeroBlocked}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 border border-indigo-500 text-white text-xs font-bold shadow-md transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none disabled:saturate-50"
+            title="Mulai sekuens pengujian turun sesuai titik tercentang — wajib kalibrasi HOME (17m) dulu lalu ZERO (0m)"
           >
             <ArrowDown className="w-4 h-4 stroke-[2.5]" />
             <span>PENGUJIAN TURUN</span>

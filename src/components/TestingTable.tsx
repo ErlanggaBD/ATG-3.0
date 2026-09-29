@@ -42,8 +42,12 @@ export const TestingTable: React.FC<TestingTableProps> = ({
   const allChecked = rows.every((r) => r.selected);
   const selectedCount = rows.filter((r) => r.selected).length;
   const isTeraUlang = activeTestMode === 'TERA_ULANG';
+  const isKalibrasi = activeTestMode === 'KALIBRASI';
   const canEditAlg = isEditAlgEnabled && activeTestMode !== 'KALIBRASI';
   const canEditStd = isEditStdEnabled && activeTestMode === 'KALIBRASI';
+  // Kalibrasi idealnya menguji semua meter. Operator tetap boleh men-uncheck,
+  // jadi di sini hanya diberi peringatan visual, bukan dikunci.
+  const kurangDiKalibrasi = isKalibrasi && selectedCount < rows.length;
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-[#0d1017] overflow-hidden">
@@ -67,6 +71,14 @@ export const TestingTable: React.FC<TestingTableProps> = ({
             <span className="text-zinc-400">
               Aktif: <strong className="text-blue-400">{selectedCount}</strong>{isTeraUlang ? ' dari maks. 5 Titik' : ' dari 13 Titik'}
             </span>
+            {kurangDiKalibrasi && (
+              <span
+                id="warn-kalibrasi-belum-lengkap"
+                className="flex items-center gap-1 rounded border border-amber-500/60 bg-amber-950/40 px-1.5 py-0.5 text-[11px] text-amber-300"
+              >
+                Kurang {rows.length - selectedCount} titik — mode KALIBRASI idealnya semua titik aktif
+              </span>
+            )}
           </div>
         </div>
 

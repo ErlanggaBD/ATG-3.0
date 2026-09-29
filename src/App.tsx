@@ -148,21 +148,21 @@ export default function App() {
       id: '1',
       timestamp: '09:30:00',
       direction: 'SYS',
-      payload: 'WSAStartup 2.2 Initialized. Soket TCP siap.',
+      payload: 'Soket UDP siap. Menunggu koneksi firmware Arduino (192.168.1.103:8888).',
       status: 'INFO'
     },
     {
       id: '2',
       timestamp: '09:30:01',
       direction: 'TX',
-      payload: 'CONNECT 192.168.1.100:8080',
+      payload: 'CONNECT 192.168.1.103:8888 (UDP)',
       status: 'OK'
     },
     {
       id: '3',
       timestamp: '09:30:01',
       direction: 'RX',
-      payload: 'ACK:CONNECTED;DEV=ATG_STEPPER_CTRL_V3;POS=0.000;STAT=READY',
+      payload: 'OK (firmware Basic_Test_UDP terhubung)',
       status: 'OK'
     }
   ]);
@@ -175,6 +175,13 @@ export default function App() {
   // Popup peringatan saat operator mencoba menjalankan perintah hardware
   // padahal aplikasi belum terhubung ke jaringan hardware.
   const [connRequired, setConnRequired] = useState<{ action: string } | null>(null);
+
+  // Pengunci kalibrasi bertingkat: HOME (HOME_DONE, motor di ujung >17 m)
+  // lalu ZERO (ZERO_DONE, motor di ujung <5 m, posisi 0). Pengujian naik/turun
+  // & pergerakan posisi (@<mm>) baru boleh dijalankan setelah ZERO_DONE.
+  const [isHomed, setIsHomed] = useState(false);
+  const [isZeroed, setIsZeroed] = useState(false);
+  const [calibrationRequired, setCalibrationRequired] = useState<{ action: string } | null>(null);
 
   // Sequence state
   const [isRunningSequence, setIsRunningSequence] = useState(false);
@@ -190,6 +197,13 @@ export default function App() {
   const skipAutoReconnectRef = useRef(false);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
+  // Sekuens MENUNGGU POS_DONE asli dari firmware sebelum lanjut ke titik
+  // berikutnya / popup. pendingSeqMoveRef = pergerakan posisi sekuens belum
+  // dikonfirmasi tiba secara fisik.
+  const pendingSeqMoveRef = useRef(false);
+  const isRunningSequenceRef = useRef(isRunningSequence);
+  isRunningSequenceRef.current = isRunningSequence;
+  const onSequenceArrivedRef = useRef<(() => void) | null>(null);
 
   const sendHardwarePacket = async (packet: string) => {
     if (!window.desktopApp?.sendHardware) return false;
@@ -223,15 +237,110 @@ export default function App() {
     return false;
   };
 
+  // Kunci kalibrasi bertingkat (sesuai alur operator):
+  //   Tahap 1 — HOME: tombol HOME (17m) mengirim '+' → motor ke arah 17 m sampai
+  //            limit A1 (ujung >17 m) → HOME_DONE. Wajib pertama kali.
+  //   Tahap 2 — ZERO: tombol ZERO (0m) mengirim '-' → motor mundur sampai limit
+  //            A1 (ujung <5 m, posisi 0) → ZERO_DONE.
+  //   Setelah ZERO_DONE barulah pengujian naik/turun (@<mm> via A0) boleh.
+  const requireHome = (action: string): boolean => {
+    if (isHomed) return true;
+    addTcpLog('SYS', `Perintah diblokir — ${action}: motor belum di-HOME. Klik HOME (17m) dulu.`, 'ERR');
+    setCalibrationRequired({
+      action: `${action}: motor belum di-HOME. Klik tombol HOME (17m) dulu agar motor mencari limit A1 di ujung 17 m.`
+    });
+    return false;
+  };
+
+  const requireZero = (action: string): boolean => {
+    if (isZeroed) return true;
+    if (!isHomed) {
+      addTcpLog('SYS', `Perintah diblokir — ${action}: motor belum di-HOME (17m).`, 'ERR');
+      setCalibrationRequired({
+        action: `${action}: motor belum di-HOME. Klik tombol HOME (17m) dulu.`
+      });
+      return false;
+    }
+    addTcpLog('SYS', `Perintah diblokir — ${action}: motor belum di-ZERO. Klik ZERO (0m) dulu.`, 'ERR');
+    setCalibrationRequired({
+      action: `${action}: motor sudah di-HOME tapi belum di-ZERO. Klik tombol ZERO (0m) dulu agar motor mencari limit A1 di ujung sebelum 5 m (posisi 0).`
+    });
+    return false;
+  };
+
   useEffect(() => {
     const unsubscribe = window.desktopApp?.onHardwareLog?.((entry) => {
       addTcpLog(entry.direction, entry.payload, entry.status);
+      // Respon firmware Basic_Test_UDP: "..._DONE" menandakan gerakan selesai →
+      // sinkronkan posisi lokal dan hentikan status bergerak. Token "OK" hanya
+      // balasan ping heartbeat — TIDAK menghentikan status gerak.
+      if (entry.direction !== 'RX') return;
+      const p = String(entry.payload).trim();
+      if (p.startsWith('POS_DONE:')) {
+        const mm = Number(p.substring(9));
+        const posMeter = Number.isNaN(mm) ? null : mm / 1000;
+        if (posMeter !== null) {
+          setMotorStatus((prev) => ({
+            ...prev,
+            currentPositionMeter: posMeter,
+            targetPositionMeter: posMeter,
+            isMoving: false,
+            direction: 'IDLE'
+          }));
+          // Sekuens: motor sudah berhenti fisik di titik (A0/posisi) → lanjut.
+          if (pendingSeqMoveRef.current && isRunningSequenceRef.current) {
+            pendingSeqMoveRef.current = false;
+            onSequenceArrivedRef.current?.();
+          }
+        }
+      } else if (p === 'HOME_DONE') {
+        // Kalibrasi HOME selesai: motor berhenti di limit A1 ujung >17 m.
+        // (Selanjutnya operator harus ZERO (0m) sebelum pengujian.)
+        setIsHomed(true);
+        setMotorStatus((prev) => ({
+          ...prev,
+          currentPositionMeter: 17.0,
+          targetPositionMeter: 17.0,
+          isMoving: false,
+          direction: 'IDLE',
+          homeSensorActive: true
+        }));
+      } else if (p === 'ZERO_DONE') {
+        // Kalibrasi ZERO selesai: motor berhenti di limit A1 ujung <5 m (posisi 0).
+        // Setelah ini pengujian naik/turun (@<mm> via A0) boleh dijalankan.
+        setIsHomed(true);
+        setIsZeroed(true);
+        setMotorStatus((prev) => ({
+          ...prev,
+          currentPositionMeter: 0,
+          targetPositionMeter: 0,
+          isMoving: false,
+          direction: 'IDLE',
+          zeroSensorActive: true
+        }));
+      } else if (p === 'NOT_HOMED') {
+        // Firmware menolak karena motor belum di-HOME (klik HOME (17m) dulu).
+        setIsHomed(false);
+        setIsZeroed(false);
+        setMotorStatus((prev) => ({ ...prev, isMoving: false, direction: 'IDLE' }));
+        setCalibrationRequired({ action: 'Firmware menolak: motor belum di-HOME. Klik HOME (17m) dulu.' });
+      } else if (p === 'NOT_ZEROED') {
+        // Firmware menolak karena sudah HOME tapi belum ZERO (klik ZERO (0m) dulu).
+        setMotorStatus((prev) => ({ ...prev, isMoving: false, direction: 'IDLE' }));
+        setCalibrationRequired({ action: 'Firmware menolak: motor sudah di-HOME tapi belum di-ZERO. Klik ZERO (0m) dulu.' });
+      } else if (p === 'UKUR_DONE') {
+        // Stroke ukur selesai.
+        setMotorStatus((prev) => ({ ...prev, isMoving: false, direction: 'IDLE' }));
+      } else if (p === 'ACK') {
+        // Mode ukur mulai: motor sedang melakukan stroke ukur.
+        setMotorStatus((prev) => ({ ...prev, isMoving: true }));
+      }
     });
     return unsubscribe;
   }, []);
 
-  // Auto-deteksi koneksi putus dari main process (firmware berhenti membalas
-  // 'online') → hentikan motor, tutup modal, dan reset status.
+  // Auto-deteksi koneksi putus dari main process (ping 'y' tidak lagi dibalas)
+  // → hentikan motor, tutup modal, dan reset status.
   const connectedRef = useRef(motorStatus.connected);
   connectedRef.current = motorStatus.connected;
   useEffect(() => {
@@ -246,6 +355,7 @@ export default function App() {
         sequenceStepRef.current = null;
         completedSequenceStepRef.current = null;
         waitingForInputRef.current = false;
+        pendingSeqMoveRef.current = false;
         setMeasurementPrompt(null);
         setIsRunningSequence(false);
         setMotorStatus((prev) => ({
@@ -260,17 +370,6 @@ export default function App() {
     });
     return unsubscribe;
   }, []);
-
-  useEffect(() => {
-    if (!motorStatus.connected || !motorStatus.isMoving) return;
-
-    const zValue = motorStatus.direction === 'UP' ? 100 : 0;
-    const interval = setInterval(() => {
-      void sendHardwarePacket(`@J50_50_${zValue}_1?`);
-    }, 100);
-
-    return () => clearInterval(interval);
-  }, [motorStatus.connected, motorStatus.isMoving, motorStatus.direction]);
 
   // ===== AUTO-RECONNECT =====
   // Saat koneksi putus (kabel LAN dicabut, perangkat mati, dsb) dan opsi
@@ -411,10 +510,11 @@ export default function App() {
     handleMoveToMeter(nextMeter);
   };
 
-  // Continue the sequence only after the motor has stopped at the current point.
-  useEffect(() => {
-    if (motorStatus.isMoving || !isRunningSequence || waitingForInputRef.current) return;
-
+  // Dipanggil saat motor BENAR-BENAR berhenti di titik (firmware POS_DONE:<mm>).
+  // Buka modal input nilai, atau lanjut ke titik berikutnya yang dicentang.
+  // (Sekuens tidak lagi bergantung pada simulasi animasi lokal — popup hanya
+  // muncul setelah kedatangan fisik terkonfirmasi lewat POS_DONE.)
+  const onSequenceArrived = () => {
     const direction = sequenceDirectionRef.current;
     const meter = sequenceStepRef.current;
     if (!direction || meter === null || completedSequenceStepRef.current === meter) return;
@@ -422,30 +522,30 @@ export default function App() {
     completedSequenceStepRef.current = meter;
     sequenceAdvanceTimeoutRef.current = setTimeout(() => {
       if (rowsRef.current.some((row) => row.meter === meter && row.selected)) {
-        // Stop the sequence and open the input modal.
-        // The motor stays at this point until the operator saves the value.
+        // Motor berhenti di titik tercentang → buka modal input nilai.
         waitingForInputRef.current = true;
         requestSequenceMeasurement(meter, direction);
         return;
       }
       advanceSequence(direction);
     }, 0);
+  };
+  onSequenceArrivedRef.current = onSequenceArrived;
 
-    return () => {
-      if (sequenceAdvanceTimeoutRef.current) {
-        clearTimeout(sequenceAdvanceTimeoutRef.current);
-        sequenceAdvanceTimeoutRef.current = null;
-      }
-    };
-  }, [motorStatus.isMoving, isRunningSequence]);
-
-  // Handler: Move motor to specific meter
+  // Handler: Move motor to specific meter (kirim posisi absolut dalam mm)
   const handleMoveToMeter = (meter: number) => {
     if (!requireHardwareConnection(`Gerakkan motor ke ${meter} m`)) return;
-    addTcpLog('TX', `CMD:MOVE_POS:${meter.toFixed(3)}\\r\\n`);
+    if (!requireZero(`Gerakkan motor ke ${meter} m`)) return;
+    const targetMm = Math.round(meter * 1000);
+    addTcpLog('TX', `@${targetMm} (pindah ke posisi ${meter.toFixed(3)} m)`);
     if (motorStatus.connected) {
-      void sendHardwarePacket(`@J50_50_${meter > motorStatus.currentPositionMeter ? 100 : 0}_1?`);
+      void sendHardwarePacket(`@${targetMm}`);
     }
+    // Saat sedang sekuens: motor belum dianggap tiba sampai firmware
+    // membalas POS_DONE:<mm> (berhenti fisik via sensor A0 / posisi).
+    // Dipakai sequenceDirectionRef (bukan state isRunningSequence) supaya
+    // pergerakan pertama sekuens ikut terdeteksi sebelum re-render.
+    if (sequenceDirectionRef.current) pendingSeqMoveRef.current = true;
     setMotorStatus((prev) => ({
       ...prev,
       targetPositionMeter: meter,
@@ -454,28 +554,39 @@ export default function App() {
     }));
   };
 
-  // Handler: ZERO (Area 5m)
-  const handleZero5M = () => {
-    if (!requireHardwareConnection('Gerakkan motor ke ZERO (5 m)')) return;
-    addTcpLog('TX', `CMD:GOTO_ZERO_5M\\r\\n`);
+  // Handler: ZERO — kalibrasi ke limit A1 di ujung sebelum 5 m: perintah '-'
+  // firmware (motor mundur sampai A1, posisi -> 0, respons ZERO_DONE).
+  // Syarat: HOME_DONE dulu (kalibrasi bertingkat).
+  const handleZero = () => {
+    if (!requireHardwareConnection('Kalibrasi ZERO (cari limit A1)')) return;
+    if (!requireHome('Kalibrasi ZERO (0m)')) return;
+    addTcpLog('TX', '- (ZERO - kalibrasi: motor mundur sampai limit A1 di ujung sebelum 5 m, posisi -> 0)');
+    if (motorStatus.connected) {
+      void sendHardwarePacket('-');
+    }
     setMotorStatus((prev) => ({
       ...prev,
-      targetPositionMeter: 5.000,
+      targetPositionMeter: 0,
       isMoving: true,
-      direction: 5.000 > prev.currentPositionMeter ? 'UP' : 'DOWN'
+      direction: 0 > prev.currentPositionMeter ? 'UP' : 'DOWN'
     }));
     updateTimestamp();
   };
 
-  // Handler: HOME (Area 17m)
-  const handleHome17M = () => {
-    if (!requireHardwareConnection('Gerakkan motor ke HOME (17 m)')) return;
-    addTcpLog('TX', `CMD:GOTO_HOME_17M\\r\\n`);
+  // Handler: HOME — kalibrasi awal: perintah '+' firmware (motor ke arah 17 m
+  // sampai limit A1 di ujung setelah 17 m, respons HOME_DONE). Wajib pertama
+  // kali saat program baru dinyalakan; SYARAT sebelum ZERO & pengujian naik/turun.
+  const handleHome = () => {
+    if (!requireHardwareConnection('Kalibrasi HOME (cari limit A1)')) return;
+    addTcpLog('TX', '+ (HOME - kalibrasi: motor ke arah 17 m sampai limit A1 di ujung setelah 17 m)');
+    if (motorStatus.connected) {
+      void sendHardwarePacket('+');
+    }
     setMotorStatus((prev) => ({
       ...prev,
-      targetPositionMeter: 17.000,
+      targetPositionMeter: 17.0,
       isMoving: true,
-      direction: 17.000 > prev.currentPositionMeter ? 'UP' : 'DOWN'
+      direction: 17.0 > prev.currentPositionMeter ? 'UP' : 'DOWN'
     }));
     updateTimestamp();
   };
@@ -484,6 +595,7 @@ export default function App() {
   const handlePengujianNaik = () => {
     if (isRunningSequence) return;
     if (!requireHardwareConnection('Pengujian Naik')) return;
+    if (!requireZero('Pengujian Naik')) return;
 
     const checkedMeters = rowsRef.current
       .filter((r) => r.selected)
@@ -506,6 +618,7 @@ export default function App() {
   const handlePengujianTurun = () => {
     if (isRunningSequence) return;
     if (!requireHardwareConnection('Pengujian Turun')) return;
+    if (!requireZero('Pengujian Turun')) return;
 
     const checkedMeters = rowsRef.current
       .filter((r) => r.selected)
@@ -533,11 +646,12 @@ export default function App() {
     sequenceStepRef.current = null;
     completedSequenceStepRef.current = null;
     waitingForInputRef.current = false;
+    pendingSeqMoveRef.current = false;
     setMeasurementPrompt(null);
     setIsRunningSequence(false);
-    addTcpLog('TX', 'CMD:EMERGENCY_STOP\\r\\n', 'ERR');
+    addTcpLog('TX', 's (EMERGENCY STOP)', 'ERR');
     if (motorStatus.connected) {
-      void sendHardwarePacket('@J50_50_50_1?');
+      void sendHardwarePacket('s');
     }
     setMotorStatus((prev) => ({
       ...prev,
@@ -617,6 +731,12 @@ export default function App() {
     setActiveTestMode(mode);
     if (mode === 'TERA_ULANG') {
       setRows((prev) => prev.map((row) => ({ ...row, selected: false })));
+    } else if (mode === 'KALIBRASI') {
+      // KALIBRASI wajib menguji SETIAP meter 5-17 m, jadi semua titik otomatis
+      // dicentang saat mode ini dipilih. Tanpa ini, sisa centang dari mode
+      // sebelumnya (mis. TERA_ULANG yang mengosongkan semua) ikut terbawa dan
+      // motor bisa melewati meter tanpa popup pengukuran.
+      setRows((prev) => prev.map((row) => ({ ...row, selected: true })));
     }
     addTcpLog('TX', `CMD:SET_MODE:${mode}\\r\\n`);
     updateTimestamp();
@@ -707,8 +827,8 @@ export default function App() {
       onOpenTcpLog={() => setIsTcpLogOpen(true)}
       onToggleTcp={handleToggleTcp}
       onEmergencyStop={handleEmergencyStop}
-      onZero5M={handleZero5M}
-      onHome17M={handleHome17M}
+      onZero={handleZero}
+      onHome={handleHome}
       onPengujianNaik={handlePengujianNaik}
       onPengujianTurun={handlePengujianTurun}
       onCloseApp={handleCloseApp}
@@ -758,8 +878,8 @@ export default function App() {
             onOpenSettings={() => setIsSettingsOpen(true)}
             onOpenPreview={() => setIsPreviewOpen(true)}
             onCloseApp={handleCloseApp}
-            onZero5M={handleZero5M}
-            onHome17M={handleHome17M}
+            onZero={handleZero}
+            onHome={handleHome}
             onPengujianNaik={handlePengujianNaik}
             onPengujianTurun={handlePengujianTurun}
             lastCalibrationTimestamp={lastCalibrationTimestamp}
@@ -768,6 +888,9 @@ export default function App() {
             isEditStd={isEditStdEnabled}
             onToggleEditStd={() => setIsEditStdEnabled((enabled) => !enabled)}
             isRunningSequence={isRunningSequence}
+            isHomed={isHomed}
+            isZeroed={isZeroed}
+            isConnected={motorStatus.connected}
           />
       </>
 
@@ -841,6 +964,40 @@ export default function App() {
           void handleToggleTcp();
         }}
       />
+
+      {/* Modal peringatan kalibrasi: pengujian/gerakan posisi diblokir sampai
+          operator klik HOME (17m) lalu ZERO (0m), sesuai balasan firmware
+          HOME_DONE / ZERO_DONE (atau NOT_HOMED / NOT_ZEROED). */}
+      {calibrationRequired && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4"
+          onClick={() => setCalibrationRequired(null)}
+        >
+          <div
+            id="modal-calibration-required"
+            className="bg-[#1b1e2a] border border-amber-600/60 rounded-lg shadow-2xl max-w-md w-full p-5"
+          >
+            <h3 className="text-amber-300 font-bold text-sm mb-2 flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" />
+              MOTOR BELUM DIKALIBRASI
+            </h3>
+            <p className="text-zinc-300 text-sm mb-3">{calibrationRequired.action}</p>
+            <p className="text-zinc-400 text-xs mb-4">
+              Klik tombol <span className="text-zinc-100 font-semibold">HOME (17m)</span> agar motor
+              mencari limit A1 di ujung 17 m, lalu{' '}
+              <span className="text-zinc-100 font-semibold">ZERO (0m)</span> di ujung sebelum 5 m —
+              syarat wajib sebelum pengujian naik/turun atau pergerakan ke titik meter.
+            </p>
+            <button
+              id="btn-calibration-close"
+              onClick={() => setCalibrationRequired(null)}
+              className="px-4 py-1.5 rounded bg-amber-500/20 border border-amber-500/60 text-amber-200 text-xs font-semibold hover:bg-amber-500/30"
+            >
+              Mengerti
+            </button>
+          </div>
+        </div>
+      )}
     </DesktopWindowFrame>
   );
 }

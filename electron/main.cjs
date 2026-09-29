@@ -13,12 +13,23 @@ let udpVerified = false;
 let udpLastRxAt = 0;
 let udpVerificationResolve = null;
 
-// Firmware SlaveUDP (Arduino + W5100) memutus koneksi sendiri jika tidak ada
-// paket masuk dalam 2000ms. Deteksi sisi desktop harus sedikit lebih santai:
-// heartbeat dikirim tiap 1500ms, jadi jika 3x berturut-turut tanpa balasan,
-// anggap koneksi putus.
+// Firmware Basic_Test_UDP (Arduino + W5100) membalas ping "y" dengan "OK".
+// Firmware memproses paket UDP di dalam loop gerak (serviceEvents), jadi
+// ping tetap dibalas selama motor bergerak; E-STOP 's' pun langsung diproses.
 const CONNECT_LOST_MS = 4500;
 const HEARTBEAT_INTERVAL_MS = 1500;
+
+let lastMoveAt = 0;
+
+// Perintah yang membuat firmware sibuk bergerak (blocking) hingga selesai
+// atau bertemu limit/E-STOP. Dipakai untuk menandai beban gerak & respon done.
+const MOVE_PREFIXES = ['@', '+', '-', 'x', '%', '#'];
+
+function isMoveCommand(payload) {
+  const p = String(payload).trim();
+  if (!p) return false;
+  return MOVE_PREFIXES.some((prefix) => p.startsWith(prefix));
+}
 
 function sendHardwareLog(direction, payload, status = 'OK') {
   BrowserWindow.getAllWindows().forEach((window) => {
@@ -32,7 +43,19 @@ function broadcastHardwareState(connected) {
   });
 }
 
+function sendBestEffortStop() {
+  if (!udpSocket || !udpTarget) return;
+  try {
+    // Firmware Basic_Test_UDP: 's' = emergency stop, memotong loop gerak.
+    udpSocket.send('s', udpTarget.port, udpTarget.host, () => {});
+  } catch {
+    // Socket may already be closing; firmware keeps stepping only until
+    // the running command finishes, otherwise no reliable stop path.
+  }
+}
+
 function closeUdp() {
+  sendBestEffortStop();
   if (udpHeartbeat) {
     clearInterval(udpHeartbeat);
     udpHeartbeat = null;
@@ -47,6 +70,7 @@ function closeUdp() {
   }
   udpTarget = null;
   udpVerified = false;
+  lastMoveAt = 0;
 }
 
 function createUdpSocket() {
@@ -57,12 +81,17 @@ function createUdpSocket() {
     const payload = message.toString('utf8').trim();
     if (!payload) return;
     udpLastRxAt = Date.now();
-    // Firmware SlaveUDP membalas "online" saat menerima probe "response".
-    if (!udpVerified && payload === 'online' && udpVerificationResolve) {
+    // Firmware Basic_Test_UDP: verifikasi koneksi adalah balasan "OK" untuk ping "y".
+    if (!udpVerified && payload === 'OK' && udpVerificationResolve) {
       const resolve = udpVerificationResolve;
       udpVerificationResolve = null;
       udpVerified = true;
       resolve(true);
+    }
+    // Respon "..._DONE" / "OK" / "ACK" menandakan gerakan selesai → gerakan
+    // berikutnya tidak lagi mendapat masa tenggang.
+    if (payload.endsWith('_DONE') || payload === 'OK' || payload === 'ACK') {
+      lastMoveAt = 0;
     }
     sendHardwareLog('RX', payload, 'OK');
   });
@@ -74,11 +103,11 @@ function createUdpSocket() {
   return udpSocket;
 }
 
-function sendResponseProbe() {
+function sendPingProbe() {
   if (!udpSocket || !udpTarget) return;
-  udpSocket.send('response', udpTarget.port, udpTarget.host, (error) => {
+  udpSocket.send('y', udpTarget.port, udpTarget.host, (error) => {
     if (error) sendHardwareLog('SYS', `UDP send error: ${error.message}`, 'ERR');
-    else sendHardwareLog('TX', 'response', 'OK');
+    else sendHardwareLog('TX', 'y', 'OK');
   });
 }
 
@@ -99,7 +128,7 @@ ipcMain.handle('hardware-connect', async (_event, config) => {
     udpVerificationResolve = resolve;
   });
 
-  sendResponseProbe();
+  sendPingProbe();
 
   const verified = await Promise.race([
     verification,
@@ -112,12 +141,12 @@ ipcMain.handle('hardware-connect', async (_event, config) => {
     return {
       ok: false,
       connected: false,
-      message: `Tidak ada balasan dari firmware Arduino di ${host}:${port}. Pastikan kabel Ethernet/WiFi terhubung dan IP-nya benar.`
+      message: `Tidak ada balasan 'OK' dari firmware Arduino UDP di ${host}:${port}. Pastikan kabel Ethernet terhubung dan IP-nya benar.`
     };
   }
 
   udpHeartbeat = setInterval(() => {
-    sendResponseProbe();
+    sendPingProbe();
     if (udpVerified && Date.now() - udpLastRxAt > CONNECT_LOST_MS) {
       sendHardwareLog('SYS', 'Koneksi ke firmware terputus (tidak ada balasan).', 'ERR');
       closeUdp();
@@ -125,9 +154,9 @@ ipcMain.handle('hardware-connect', async (_event, config) => {
     }
   }, HEARTBEAT_INTERVAL_MS);
 
-  sendHardwareLog('SYS', `Terhubung ke firmware UDP ${host}:${port} (balasan 'online' diterima).`, 'OK');
+  sendHardwareLog('SYS', `Terhubung ke firmware UDP ${host}:${port} (balasan 'OK' diterima).`, 'OK');
   broadcastHardwareState(true);
-  return { ok: true, connected: true, message: `Terhubung ke firmware Arduino ${host}:${port}` };
+  return { ok: true, connected: true, message: `Terhubung ke firmware Arduino UDP ${host}:${port}` };
 });
 
 ipcMain.handle('hardware-disconnect', () => {
@@ -149,6 +178,13 @@ ipcMain.handle('hardware-send', async (_event, payload) => {
       else resolve();
     });
   });
+  if (isMoveCommand(message)) {
+    lastMoveAt = Date.now();
+  }
+  if (message === 's') {
+    // E-STOP: firmware memotong loop gerak; tidak ada masa tenggang lagi.
+    lastMoveAt = 0;
+  }
   sendHardwareLog('TX', message, 'OK');
   return { ok: true };
 });
@@ -167,7 +203,7 @@ function createWindow() {
     backgroundColor: '#0a0c10',
     show: false,
     autoHideMenuBar: true,
-    title: 'Otomasi Pengujian ATG Horizontal',
+    title: 'ATG-3.0',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

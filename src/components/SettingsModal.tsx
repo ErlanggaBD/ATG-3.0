@@ -50,7 +50,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div>
               <h2 className="text-sm font-bold text-white">PENGATURAN SISTEM & PARAMETER EKSPOR</h2>
-              <p className="text-xs text-zinc-400">Konfigurasi laporan Excel metrologi dan soket TCP/IP controller</p>
+              <p className="text-xs text-zinc-400">Konfigurasi laporan Excel metrologi dan soket UDP controller</p>
             </div>
           </div>
           <button
@@ -84,7 +84,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             }`}
           >
             <Network className="w-4 h-4" />
-            <span>Koneksi TCP/IP Controller</span>
+            <span>Koneksi UDP/LAN Controller</span>
           </button>
         </div>
 
@@ -181,7 +181,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           ) : (
             <div className="space-y-4">
               <div className="bg-blue-950/30 border border-blue-800/40 p-3 rounded-lg text-blue-300 text-xs">
-                Parameter alamat IP dan Port soket TCP/IP hardware kontroler motor stepper (ESP32 / PLC / Motion Controller).
+                Parameter alamat IP dan Port soket UDP firmware Arduino/W5100 (Ethernet shield) di LAN.
               </div>
 
               <div className="grid grid-cols-2 gap-3.5">
@@ -196,7 +196,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-zinc-400 mb-1 font-medium">Port TCP</label>
+                  <label className="block text-zinc-400 mb-1 font-medium">Port UDP</label>
                   <input
                     type="number"
                     value={localTcp.port}
@@ -225,7 +225,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-4 h-4 rounded bg-zinc-900 border-zinc-700 text-blue-600 focus:ring-0 cursor-pointer"
                 />
                 <label htmlFor="chk-auto-reconnect" className="text-zinc-300 cursor-pointer">
-                  Auto-Reconnect otomatis jika koneksi TCP terputus
+                  Auto-Reconnect otomatis jika koneksi UDP terputus
                 </label>
               </div>
             </div>

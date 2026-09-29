@@ -55,7 +55,7 @@ export const Header: React.FC<HeaderProps> = ({
           id="btn-toggle-tcp"
           onClick={onToggleTcp}
           className="flex items-center gap-1.5 hover:opacity-80 transition cursor-pointer"
-          title="Klik untuk Connect / Disconnect Soket TCP"
+          title="Klik untuk Connect / Disconnect Soket UDP"
         >
           {motorStatus.connected ? (
             <>
@@ -95,10 +95,10 @@ export const Header: React.FC<HeaderProps> = ({
           id="btn-open-tcplog"
           onClick={onOpenTcpLog}
           className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 transition"
-          title="Buka Terminal Log TCP/IP"
+          title="Buka Terminal Log UDP"
         >
           <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Log TCP</span>
+          <span>Log UDP</span>
         </button>
 
         {/* Emergency Stop Button */}

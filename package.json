@@ -1,8 +1,8 @@
 {
-  "name": "react-example",
+  "name": "atg-3-0",
   "private": true,
-  "version": "0.0.0",
-  "description": "Aplikasi desktop otomasi pengujian ATG horizontal.",
+  "version": "3.0.0",
+  "description": "Aplikasi desktop otomasi pengujian ATG horizontal (kontrol firmware Basic_Test_UDP via UDP/LAN).",
   "author": "ATG Metrologi",
   "type": "module",
   "scripts": {
@@ -47,8 +47,8 @@
   },
   "main": "electron/main.cjs",
   "build": {
-    "appId": "com.atg.metrologi",
-    "productName": "Otomasi Pengujian ATG",
+    "appId": "com.atg.metrologi.v3",
+    "productName": "ATG-3.0",
     "directories": {
       "output": "release"
     },
@@ -61,7 +61,16 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "${productName}-${version}-Setup.${ext}"
+      "artifactName": "ATG-3.0-Setup.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "artifactName": "ATG-3.0.${ext}",
+      "maintainer": "ATG Metrologi"
     },
     "nsis": {
       "oneClick": false,

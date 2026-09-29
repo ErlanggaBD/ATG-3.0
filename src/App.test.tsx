@@ -5,6 +5,10 @@ import App from './App';
 
 // Bridge desktopApp hanya tersedia di dalam Electron. Di lingkungan test kita
 // install mock agar alur connect/disconnect dan pengiriman paket bisa diuji.
+// `emitRx` dipakai tes untuk mensimulasikan balasan firmware (RX) asli,
+// misalnya POS_DONE:<mm> / HOME_DONE — sekuens menunggu balasan inilah.
+let emitRx: (payload: string) => void = () => {};
+
 function installDesktopBridge() {
   Object.defineProperty(window, 'desktopApp', {
     configurable: true,
@@ -16,7 +20,10 @@ function installDesktopBridge() {
       connectHardware: vi.fn(async () => ({ ok: true, connected: true, message: 'ok' })),
       disconnectHardware: vi.fn(async () => ({ ok: true, connected: false, message: 'ok' })),
       sendHardware: vi.fn(async () => ({ ok: true, message: 'sent' })),
-      onHardwareLog: vi.fn(() => () => {}),
+      onHardwareLog: vi.fn((cb: (log: { direction: 'TX' | 'RX' | 'SYS'; payload: string; status: 'OK' | 'ERR' | 'INFO' }) => void) => {
+        emitRx = (payload: string) => cb({ direction: 'RX', payload, status: 'OK' });
+        return () => {};
+      }),
       onHardwareState: vi.fn(() => () => {})
     }
   });
@@ -88,19 +95,47 @@ describe('App — proteksi saat belum terhubung ke hardware', () => {
     expectBlocked();
   });
 
-  it('saat sudah terhubung, tombol pergerakan motor berjalan tanpa popup', async () => {
+  it('saat sudah terhubung, kalibrasi bertingkat (HOME lalu ZERO) baru pergerakan bisa berjalan tanpa popup', async () => {
     render(<App />);
     await connectViaHeader();
 
     // Terhubung → host:port tampil di header & status bar
     expect(screen.getAllByText(/192\.168\.1\.103:8888/).length).toBeGreaterThan(0);
 
-    // ZERO & HOME dapat dijalankan tanpa popup
+    // Sebelum HOME: tombol ZERO/PENGUJIAN non-aktif, klik tidak
+    // memunculkan popup koneksi (aplikasi non-aktifkan sampai HOME_DONE).
+    expect((document.getElementById('btn-toolbar-zero') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(document.getElementById('btn-toolbar-zero') as HTMLButtonElement);
     expect(screen.queryByText(/BELUM TERHUBUNG KE HARDWARE/)).toBeNull();
 
+    // Klik titik track sebelum kalibrasi → peringatan "belum dikalibrasi"
+    fireEvent.click(document.getElementById('track-tick-6') as HTMLButtonElement);
+    expect(screen.getByText(/MOTOR BELUM DIKALIBRASI/)).toBeTruthy();
+    fireEvent.click(document.getElementById('btn-calibration-close') as HTMLButtonElement);
+    expect(screen.queryByText(/MOTOR BELUM DIKALIBRASI/)).toBeNull();
+
+    // HOME tetap aktif: kalibrasi tanpa popup koneksi
+    expect((document.getElementById('btn-toolbar-home') as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(document.getElementById('btn-toolbar-home') as HTMLButtonElement);
     expect(screen.queryByText(/BELUM TERHUBUNG KE HARDWARE/)).toBeNull();
+
+    // Firmware membalas HOME_DONE → ZERO aktif, PENGUJIAN masih non-aktif
+    await act(async () => {
+      emitRx('HOME_DONE');
+    });
+    expect((document.getElementById('btn-toolbar-zero') as HTMLButtonElement).disabled).toBe(false);
+    expect((document.getElementById('btn-toolbar-uji-naik') as HTMLButtonElement).disabled).toBe(true);
+
+    // ZERO sekarang bisa dijalankan tanpa popup koneksi
+    fireEvent.click(document.getElementById('btn-toolbar-zero') as HTMLButtonElement);
+    expect(screen.queryByText(/BELUM TERHUBUNG KE HARDWARE/)).toBeNull();
+
+    // Firmware membalas ZERO_DONE → PENGUJIAN ikut aktif
+    await act(async () => {
+      emitRx('ZERO_DONE');
+    });
+    expect((document.getElementById('btn-toolbar-uji-naik') as HTMLButtonElement).disabled).toBe(false);
+    expect((document.getElementById('btn-toolbar-uji-turun') as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -150,6 +185,43 @@ describe('App — auto-reconnect', () => {
     await act(async () => {});
     expect((document.getElementById('btn-toggle-tcp') as HTMLButtonElement).textContent).toContain('DISCONNECTED');
   });
+
+  it('mode KALIBRASI: semua titik otomatis tercentang saat dipilih', async () => {
+    render(<App />);
+
+    // Kondisi awal: seluruh 13 titik tercentang
+    expect((document.getElementById('chk-point-5') as HTMLInputElement).checked).toBe(true);
+    expect((document.getElementById('chk-point-17') as HTMLInputElement).checked).toBe(true);
+
+    // Pindah ke TERA_ULANG → semua titik dikosongkan
+    fireEvent.click(document.getElementById('btn-menu-tera-ulang') as HTMLButtonElement);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect((document.getElementById('chk-point-5') as HTMLInputElement).checked).toBe(false);
+    expect((document.getElementById('chk-point-17') as HTMLInputElement).checked).toBe(false);
+
+    // Kembali ke KALIBRASI → semua titik harus tercentang lagi otomatis
+    fireEvent.click(document.getElementById('btn-menu-kalibrasi') as HTMLButtonElement);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    for (let meter = 5; meter <= 17; meter++) {
+      expect((document.getElementById(`chk-point-${meter}`) as HTMLInputElement).checked).toBe(true);
+    }
+  });
+
+  it('mode KALIBRASI: operator tetap boleh men-uncheck sebagian titik', async () => {
+    render(<App />);
+
+    //boleh diubah manual, tapi muncul peringatan karena kurang dari 13 titik
+    fireEvent.click(document.getElementById('chk-point-17') as HTMLInputElement);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect((document.getElementById('chk-point-17') as HTMLInputElement).checked).toBe(false);
+    expect(document.getElementById('warn-kalibrasi-belum-lengkap')).not.toBeNull();
+  });
 });
 
 describe('App — pengujian hanya mengunjungi titik yang dicentang', () => {
@@ -163,13 +235,17 @@ describe('App — pengujian hanya mengunjungi titik yang dicentang', () => {
     vi.useRealTimers();
   });
 
-  it('PENGUJIAN NAIK berhenti di titik terakhir yang dicentang (14m), tidak lanjut ke 17m/home', { timeout: 30000 }, async () => {
+  it('PENGUJIAN NAIK menunggu POS_DONE asli dari firmware di tiap titik (berhenti fisik)', { timeout: 30000 }, async () => {
     render(<App />);
 
     // Hubungkan ke hardware terlebih dahulu (syarat sebelum sekuens berjalan)
     await connectViaHeader();
 
-    // Matikan titik 15, 16, 17 → hanya 5..14 yang aktif (10 titik)
+    // Matikan titik 15, 16, 17 → hanya 5..14 yang aktif (10 titik).
+    // Catatan: di mode KALIBRASI operator tetap boleh men-uncheck sebagian titik
+    // (hanya saat MEMILIH mode KALIBRASI semua titik yang otomatis tercentang).
+    // Skenario 10 dari 13 titik ini tidak mungkin di TERA_ULANG karena mode itu
+    // membatasi maksimal 5 titik aktif.
     fireEvent.click(document.getElementById('chk-point-15') as HTMLInputElement);
     fireEvent.click(document.getElementById('chk-point-16') as HTMLInputElement);
     fireEvent.click(document.getElementById('chk-point-17') as HTMLInputElement);
@@ -180,25 +256,42 @@ describe('App — pengujian hanya mengunjungi titik yang dicentang', () => {
     expect((document.getElementById('chk-point-15') as HTMLInputElement).checked).toBe(false);
     expect((document.getElementById('chk-point-17') as HTMLInputElement).checked).toBe(false);
 
+    // Sebelum kalibrasi, tombol PENGUJIAN non-aktif (syarat wajib HOME dulu)
+    expect((document.getElementById('btn-toolbar-uji-naik') as HTMLButtonElement).disabled).toBe(true);
+
+    // Kalibrasi bertingkat: HOME dulu (HOME_DONE), lalu ZERO (ZERO_DONE).
+    fireEvent.click(document.getElementById('btn-toolbar-home') as HTMLButtonElement);
+    await act(async () => {
+      emitRx('HOME_DONE');
+    });
+    // Setelah HOME barulah ZERO aktif; PENGUJIAN masih non-aktif.
+    expect((document.getElementById('btn-toolbar-zero') as HTMLButtonElement).disabled).toBe(false);
+    expect((document.getElementById('btn-toolbar-uji-naik') as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(document.getElementById('btn-toolbar-zero') as HTMLButtonElement);
+    await act(async () => {
+      emitRx('ZERO_DONE');
+    });
+    expect((document.getElementById('btn-toolbar-uji-naik') as HTMLButtonElement).disabled).toBe(false);
+
     // Mulai PENGUJIAN NAIK
     fireEvent.click(document.getElementById('btn-toolbar-uji-naik') as HTMLButtonElement);
     expect(screen.getByText(/Sekuens Motor Sedang Berjalan/)).toBeTruthy();
 
     const visitedMeters: number[] = [];
 
-    // Motor bergerak dari posisi awal (0m). Antri dan isi modal di setiap titik.
+    // Motor bergerak fisik ke tiap titik. Popup HANYA muncul setelah firmware
+    // membalas POS_DONE:<mm> — tanda motor benar-benar berhenti (sensor A0
+    // penanda meter / posisi target), bukan hasil simulasi animasi lokal.
     for (let step = 0; step < 10; step++) {
-      let guard = 0;
-      // Majukan waktu (tiap 250ms motor bergerak 0.075m) sampai modal muncul
-      while (!document.getElementById('modal-measurement')) {
-        guard += 1;
-        if (guard > 5000) throw new Error('Modal hasil pengujian tidak muncul.');
-        act(() => {
-          vi.advanceTimersByTime(250);
-        });
-      }
+      const meter = 5 + step;
+      await act(async () => {
+        emitRx(`POS_DONE:${meter * 1000}`);
+        vi.advanceTimersByTime(0);
+      });
 
       const modal = document.getElementById('modal-measurement') as HTMLElement;
+      expect(modal).not.toBeNull();
       const match = modal.textContent?.match(/Titik\s+(\d+)\s+m\s*[—-]\s*Uji Naik/);
       expect(match).not.toBeNull();
       visitedMeters.push(Number(match?.[1]));
@@ -207,7 +300,9 @@ describe('App — pengujian hanya mengunjungi titik yang dicentang', () => {
       fireEvent.change(document.getElementById('input-measurement-value') as HTMLInputElement, {
         target: { value: (Number(match?.[1]) * 1000).toString() }
       });
-      fireEvent.click(document.getElementById('btn-measurement-save') as HTMLButtonElement);
+      await act(async () => {
+        fireEvent.click(document.getElementById('btn-measurement-save') as HTMLButtonElement);
+      });
     }
 
     // Urutan titik yang dikunjungi harus 5,6,7,...,14
@@ -220,12 +315,13 @@ describe('App — pengujian hanya mengunjungi titik yang dicentang', () => {
     act(() => {
       vi.advanceTimersByTime(5000);
     });
+    expect(document.getElementById('modal-measurement')).toBeNull();
 
     // Sequence selesai → status siap kembali
     expect(screen.queryByText(/Sekuens Motor Sedang Berjalan/)).toBeNull();
-    expect(screen.getByText(/Controller Siap Menerima Perintah TCP/)).toBeTruthy();
+    expect(screen.getByText(/Controller Siap Menerima Perintah UDP/)).toBeTruthy();
 
-    // Motor berhenti di 14m, bukan di home/17m
+    // Motor berhenti di 14m (dikonfirmasi POS_DONE:14000), bukan di home/17m
     expect(screen.getByText(/14\.000m/)).toBeTruthy();
   });
 });

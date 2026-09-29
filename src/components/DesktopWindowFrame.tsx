@@ -29,8 +29,8 @@ interface DesktopWindowFrameProps {
   onOpenTcpLog: () => void;
   onToggleTcp: () => void;
   onEmergencyStop: () => void;
-  onZero5M: () => void;
-  onHome17M: () => void;
+  onZero: () => void;
+  onHome: () => void;
   onPengujianNaik: () => void;
   onPengujianTurun: () => void;
   onCloseApp: () => void;
@@ -47,8 +47,8 @@ export const DesktopWindowFrame: React.FC<DesktopWindowFrameProps> = ({
   onOpenTcpLog,
   onToggleTcp,
   onEmergencyStop,
-  onZero5M,
-  onHome17M,
+  onZero,
+  onHome,
   onPengujianNaik,
   onPengujianTurun,
   onCloseApp
@@ -103,7 +103,7 @@ export const DesktopWindowFrame: React.FC<DesktopWindowFrameProps> = ({
             )}
           </div>
 
-          {/* Menu: Motor & TCP */}
+          {/* Menu: Motor & UDP */}
           <div className="relative">
             <button
               onClick={() => setActiveMenu(activeMenu === 'motor' ? null : 'motor')}
@@ -111,7 +111,7 @@ export const DesktopWindowFrame: React.FC<DesktopWindowFrameProps> = ({
                 activeMenu === 'motor' ? 'bg-zinc-800 text-white font-medium' : ''
               }`}
             >
-              Motor & TCP
+              Motor & UDP
             </button>
             {activeMenu === 'motor' && (
               <div className="absolute left-0 top-full mt-1 w-60 bg-[#1b1e2a] border border-zinc-700 rounded-md shadow-xl py-1 z-40 text-xs">
@@ -119,27 +119,27 @@ export const DesktopWindowFrame: React.FC<DesktopWindowFrameProps> = ({
                   onClick={() => { onToggleTcp(); closeMenu(); }}
                   className="w-full text-left px-3 py-1.5 hover:bg-blue-600 hover:text-white flex items-center justify-between"
                 >
-                  <span>{motorStatus.connected ? 'Putuskan Soket TCP' : 'Hubungkan Soket TCP'}</span>
+                  <span>{motorStatus.connected ? 'Putuskan Soket UDP' : 'Hubungkan Soket UDP'}</span>
                   <span className="text-[10px] text-zinc-500">Ctrl+T</span>
                 </button>
                 <button 
                   onClick={() => { onOpenTcpLog(); closeMenu(); }}
                   className="w-full text-left px-3 py-1.5 hover:bg-blue-600 hover:text-white"
                 >
-                  Buka Console Traffic Log TCP...
+                  Buka Console Traffic Log UDP...
                 </button>
                 <div className="my-1 border-t border-zinc-700/60"></div>
                 <button 
-                  onClick={() => { onZero5M(); closeMenu(); }}
+                  onClick={() => { onZero(); closeMenu(); }}
                   className="w-full text-left px-3 py-1.5 hover:bg-blue-600 hover:text-white"
                 >
-                  Gerakkan ke Titik ZERO (5.0 m)
+                  Kalibrasi ZERO — Cari Limit A1 sebelum 5 m (posisi 0, '-')
                 </button>
                 <button 
-                  onClick={() => { onHome17M(); closeMenu(); }}
+                  onClick={() => { onHome(); closeMenu(); }}
                   className="w-full text-left px-3 py-1.5 hover:bg-blue-600 hover:text-white"
                 >
-                  Gerakkan ke Titik HOME (17.0 m)
+                  Kalibrasi HOME — Cari Limit A1 di ujung 17 m ('+')
                 </button>
                 <div className="my-1 border-t border-zinc-700/60"></div>
                 <button 
@@ -194,7 +194,7 @@ export const DesktopWindowFrame: React.FC<DesktopWindowFrameProps> = ({
               <div className="absolute left-0 top-full mt-1 w-64 bg-[#1b1e2a] border border-zinc-700 rounded-md shadow-xl py-1 z-40 text-xs">
                 <button 
                   onClick={() => { 
-                    alert("Aplikasi Otomasi Pengujian ATG Horizontal dirancang khusus sebagai aplikasi desktop Windows dengan arsitektur C Win32 API murni & komunikasi TCP/IP untuk kontrol motor stepper pada lintasan 1 - 17 meter.");
+                    alert("Aplikasi ATG-3.0 dirancang khusus sebagai aplikasi desktop Windows dengan arsitektur C Win32 API murni & komunikasi TCP/IP untuk kontrol motor stepper pada lintasan 1 - 17 meter.");
                     closeMenu(); 
                   }}
                   className="w-full text-left px-3 py-1.5 hover:bg-blue-600 hover:text-white"
@@ -248,7 +248,7 @@ export const DesktopWindowFrame: React.FC<DesktopWindowFrameProps> = ({
             <div className="flex items-center gap-1.5">
               <span className={`w-2 h-2 rounded-full ${motorStatus.connected ? 'bg-emerald-400' : 'bg-rose-500'}`}></span>
               <span className="text-zinc-300">
-                TCP: {motorStatus.connected ? `${tcpConfig.host}:${tcpConfig.port} (CONNECTED)` : 'OFFLINE'}
+                UDP: {motorStatus.connected ? `${tcpConfig.host}:${tcpConfig.port} (CONNECTED)` : 'OFFLINE'}
               </span>
             </div>
             
@@ -262,7 +262,7 @@ export const DesktopWindowFrame: React.FC<DesktopWindowFrameProps> = ({
             <div className="hidden lg:flex items-center gap-1 text-zinc-400">
               <span>Sensors:</span>
               <span className="text-zinc-200">
-                ZERO={motorStatus.zeroSensorActive ? 'ACTIVE(5m)' : '0'} | HOME={motorStatus.homeSensorActive ? 'ACTIVE(17m)' : '0'}
+                ZERO={motorStatus.zeroSensorActive ? 'ACTIVE(0m)' : '0'} | HOME={motorStatus.homeSensorActive ? 'ACTIVE(17m)' : '0'}
               </span>
             </div>
           </div>
